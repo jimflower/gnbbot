@@ -3,7 +3,6 @@
   "manifestVersion": "1.17",
   "version": "1.0.0",
   "id": "{{CLIENT_ID}}",
-  "packageName": "com.gnbenergy.gnbassist",
   "developer": {
     "name": "GNB Energy",
     "websiteUrl": "{{BASE_URL}}",
