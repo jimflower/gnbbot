@@ -30,6 +30,6 @@
       "isNotificationOnly": false
     }
   ],
-  "permissions": ["identity", "messageTeamMembers"],
+  "permissions": ["identity"],
   "validDomains": ["{{DOMAIN}}"]
 }
