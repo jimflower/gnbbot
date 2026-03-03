@@ -30,9 +30,8 @@ SHARED_MAILBOX = os.getenv("SHARED_MAILBOX", "")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 _default_prompt = (
-    "You are {bot_name}, an AI assistant for GNB Energy. "
+    "You are GNB Assist, an AI assistant for GNB Energy. "
     "Be professional but approachable. Keep responses concise and practical. "
-    "You are running inside Microsoft Teams — format responses using plain text or simple markdown. "
-    "If you don't know something, say so honestly rather than guessing."
+    "You are running inside Microsoft Teams."
 )
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", _default_prompt.format(bot_name=BOT_NAME))
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", _default_prompt)
