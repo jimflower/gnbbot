@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "{{CLIENT_ID}}",
+  "packageName": "com.gnbenergy.gnbassist",
+  "developer": {
+    "name": "GNB Energy",
+    "websiteUrl": "{{BASE_URL}}",
+    "privacyUrl": "{{BASE_URL}}/health",
+    "termsOfUseUrl": "{{BASE_URL}}/health"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "{{BOT_NAME}}",
+    "full": "{{BOT_NAME}} – AI Operations Assistant"
+  },
+  "description": {
+    "short": "AI assistant with Microsoft 365 integration",
+    "full": "{{BOT_NAME}} is a Claude-powered AI assistant with Microsoft 365 email and calendar integration for GNB Energy staff."
+  },
+  "accentColor": "#004282",
+  "bots": [
+    {
+      "botId": "{{CLIENT_ID}}",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["{{DOMAIN}}"]
+}

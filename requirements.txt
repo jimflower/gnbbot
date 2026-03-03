@@ -1,0 +1,7 @@
+aiohttp>=3.9
+botbuilder-core>=4.15
+botbuilder-schema>=4.15
+botframework-connector>=4.15
+anthropic>=0.40
+requests>=2.31
+python-dotenv>=1.0

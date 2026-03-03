@@ -1,0 +1,12 @@
+.env
+data/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.log
+gnbbot-teams.zip
+teams-app/manifest.json
+teams-app/color.png
+teams-app/outline.png
