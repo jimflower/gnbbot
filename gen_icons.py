@@ -24,9 +24,9 @@ os.makedirs('teams-app', exist_ok=True)
 with open('teams-app/color.png', 'wb') as f:
     f.write(make_png(192, 192, 0, 66, 130))
 
-# Outline icon: 32x32, white on transparent
+# Outline icon: 32x32, solid white
 with open('teams-app/outline.png', 'wb') as f:
-    f.write(make_png(32, 32, 255, 255, 255, 0))  # fully transparent
+    f.write(make_png(32, 32, 255, 255, 255, 255))
 
 # Repackage zip
 with zipfile.ZipFile('gnbbot-teams.zip', 'w', zipfile.ZIP_DEFLATED) as z:
