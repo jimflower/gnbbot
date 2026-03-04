@@ -2,6 +2,13 @@
 GNB Assist — Microsoft Teams Bot
 Claude-powered AI assistant with Microsoft 365 integration.
 Each user authenticates with their own Microsoft account.
+
+OpenClaw-inspired improvements:
+  - Persistent conversation history (survives restarts)
+  - Chat commands: /help, /status, /clear
+  - Group chat activation mode (respond only when @mentioned)
+  - Microsoft Tasks integration
+  - Week-ahead calendar view
 """
 
 import asyncio
@@ -27,7 +34,14 @@ from config import (
     SHARED_MAILBOX,
     SYSTEM_PROMPT,
 )
-from graph import get_calendar_today, get_recent_emails, get_shared_mailbox_emails
+from conversations import clear_history, get_stats, load_history, save_history
+from graph import (
+    get_calendar_today,
+    get_calendar_week,
+    get_recent_emails,
+    get_shared_mailbox_emails,
+    get_tasks,
+)
 from user_tokens import OAUTH_SCOPES, delete_token, get_token, get_user_info, store_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -42,11 +56,7 @@ settings = BotFrameworkAdapterSettings(
 )
 adapter = BotFrameworkAdapter(settings)
 
-# Per-user conversation history (in-memory, resets on restart)
-conversations: dict[str, list] = {}
-MAX_HISTORY = 20
-
-# ── Intent patterns ───────────────────────────────────────────────────────────
+# ── Intent patterns ────────────────────────────────────────────────────────────
 SIGNIN_INTENTS = re.compile(
     r"^\s*(sign\s*in|connect|login|link\s+account|authenticate)\s*$", re.IGNORECASE
 )
@@ -58,9 +68,15 @@ EMAIL_INTENTS = re.compile(
     r"|check\s+(my\s+)?email|read\s+(my\s+)?email|email\s+from|emails?\s+today)",
     re.IGNORECASE,
 )
-CALENDAR_INTENTS = re.compile(
+CALENDAR_TODAY_INTENTS = re.compile(
     r"(my\s+calendar|my\s+schedule|my\s+meetings?|what.s\s+on"
     r"|today.s\s+(meetings?|events?|schedule)|my\s+(day|agenda)|what\s+do\s+i\s+have)",
+    re.IGNORECASE,
+)
+CALENDAR_WEEK_INTENTS = re.compile(
+    r"(this\s+week|next\s+week|upcoming\s+meetings?|upcoming\s+events?"
+    r"|week.s?\s+(meetings?|schedule|calendar)|meetings?\s+(this|next)\s+week"
+    r"|what.s\s+coming\s+up|rest\s+of\s+(the\s+)?week)",
     re.IGNORECASE,
 )
 ABSENCE_INTENTS = re.compile(
@@ -68,9 +84,45 @@ ABSENCE_INTENTS = re.compile(
     r"|^attendance(\s+today)?$",
     re.IGNORECASE,
 )
+TASKS_INTENTS = re.compile(
+    r"(my\s+tasks?|my\s+to\s*-?\s*do|todo\s+list|outstanding\s+tasks?"
+    r"|what\s+(do\s+i\s+need\s+to\s+do|tasks?\s+do\s+i\s+have)"
+    r"|pending\s+tasks?|open\s+tasks?)",
+    re.IGNORECASE,
+)
+COMMAND_PATTERN = re.compile(r"^[/!](\w+)", re.IGNORECASE)
 
 
-# ── Card helper ───────────────────────────────────────────────────────────────
+# ── Group chat helpers ─────────────────────────────────────────────────────────
+def _is_group_chat(turn_context: TurnContext) -> bool:
+    """True if this is a group chat or Teams channel (not a 1:1 DM)."""
+    conv = turn_context.activity.conversation
+    conv_type = getattr(conv, "conversation_type", None)
+    if conv_type is not None:
+        return conv_type in ("groupChat", "channel")
+    return bool(getattr(conv, "is_group", False))
+
+
+def _is_mentioned(turn_context: TurnContext) -> bool:
+    """True if the bot is @mentioned in the message."""
+    bot_id = turn_context.activity.recipient.id
+    for entity in turn_context.activity.entities or []:
+        ent = entity if isinstance(entity, dict) else (entity.serialize() if hasattr(entity, "serialize") else {})
+        if ent.get("type") == "mention":
+            if ent.get("mentioned", {}).get("id", "") == bot_id:
+                return True
+    return False
+
+
+def _strip_mention(text: str, turn_context: TurnContext) -> str:
+    """Remove the bot's @mention tag from message text."""
+    bot_name = turn_context.activity.recipient.name or BOT_NAME
+    text = re.sub(rf"<at>{re.escape(bot_name)}</at>", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"@{re.escape(bot_name)}", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+# ── Card helper ────────────────────────────────────────────────────────────────
 async def send_card(turn_context: TurnContext, card: dict):
     attachment = Attachment(
         content_type="application/vnd.microsoft.card.adaptive",
@@ -79,7 +131,7 @@ async def send_card(turn_context: TurnContext, card: dict):
     await turn_context.send_activity(Activity(type=ActivityTypes.message, attachments=[attachment]))
 
 
-# ── Graph context builders ────────────────────────────────────────────────────
+# ── Graph context builders ─────────────────────────────────────────────────────
 def _emails_context(token: str) -> str:
     emails = get_recent_emails(token)
     if not emails:
@@ -116,6 +168,65 @@ def _calendar_context(token: str) -> str:
     return "\n".join(lines)
 
 
+def _calendar_week_context(token: str) -> str:
+    from datetime import datetime
+    import zoneinfo
+    AEST   = zoneinfo.ZoneInfo("Australia/Brisbane")
+    events = get_calendar_week(token)
+    if not events:
+        return "The user has no upcoming calendar events in the next 7 days."
+    lines = ["Upcoming calendar (next 7 days):"]
+    prev_date = None
+    for ev in events:
+        raw_start = ev.get("start", {}).get("dateTime", "")
+        date_str  = raw_start[:10]
+        time_str  = raw_start[11:16]
+        end_str   = ev.get("end", {}).get("dateTime", "")[11:16]
+        subject   = ev.get("subject", "(no title)")
+        loc       = ev.get("location", {}).get("displayName", "")
+        is_allday = ev.get("isAllDay", False)
+
+        if date_str != prev_date:
+            try:
+                dt      = datetime.fromisoformat(raw_start)
+                day_lbl = dt.strftime("%A %-d %b")
+            except Exception:
+                day_lbl = date_str
+            lines.append(f"\n**{day_lbl}**")
+            prev_date = date_str
+
+        if is_allday:
+            entry = f"- (All day) {subject}"
+        else:
+            entry = f"- {time_str}–{end_str} | {subject}"
+        if loc:
+            entry += f" @ {loc}"
+        lines.append(entry)
+    return "\n".join(lines)
+
+
+def _tasks_context(token: str) -> str:
+    tasks = get_tasks(token)
+    if not tasks:
+        return "The user has no outstanding tasks in Microsoft To Do."
+    lines = ["The user's outstanding tasks:"]
+    by_list: dict[str, list] = {}
+    for t in tasks:
+        lst = t.get("_list_name", "Tasks")
+        by_list.setdefault(lst, []).append(t)
+    for lst_name, lst_tasks in by_list.items():
+        lines.append(f"\n**{lst_name}:**")
+        for t in lst_tasks:
+            title     = t.get("title", "(untitled)")
+            imp       = t.get("importance", "normal")
+            due_raw   = (t.get("dueDateTime") or {}).get("dateTime", "")
+            due       = due_raw[:10] if due_raw else ""
+            imp_flag  = " ⭐" if imp == "high" else ""
+            due_flag  = f" (due {due})" if due else ""
+            lines.append(f"- {title}{imp_flag}{due_flag}")
+    return "\n".join(lines)
+
+
 def _check_absences(token: str) -> list[dict]:
     """Parse today's absence emails from the shared mailbox."""
     from datetime import datetime
@@ -149,7 +260,69 @@ def _check_absences(token: str) -> list[dict]:
     return absences
 
 
-# ── Bot logic ─────────────────────────────────────────────────────────────────
+# ── Command handlers ───────────────────────────────────────────────────────────
+async def handle_command(turn_context: TurnContext, command: str, user_id: str) -> bool:
+    """
+    Handle slash/bang commands.  Returns True if the command was handled.
+    Inspired by OpenClaw's /status, /usage, /activation, /think commands.
+    """
+    cmd = command.lower()
+
+    if cmd == "help":
+        token = get_token(user_id)
+        auth_status = "✅ Connected" if token else "❌ Not connected"
+        help_text = (
+            f"**{BOT_NAME} — Help**\n\n"
+            "**Microsoft 365 features** (requires sign-in):\n"
+            "- *\"my emails\"* — recent inbox messages\n"
+            "- *\"my calendar\"* or *\"my schedule\"* — today's meetings\n"
+            "- *\"this week\"* or *\"upcoming meetings\"* — next 7 days\n"
+            "- *\"my tasks\"* — outstanding To Do items\n"
+        )
+        if SHARED_MAILBOX:
+            help_text += "- *\"absences\"* or *\"who's out\"* — today's absence report\n"
+        help_text += (
+            "\n**Account**:\n"
+            "- *sign in* — connect your Microsoft account\n"
+            "- *sign out* — disconnect your account\n"
+            f"- Your account status: {auth_status}\n"
+            "\n**Commands**:\n"
+            "- `/help` — show this message\n"
+            "- `/status` — show connection & history info\n"
+            "- `/clear` — clear conversation history\n"
+            "\nFor anything else, just ask me naturally!"
+        )
+        await turn_context.send_activity(help_text)
+        return True
+
+    if cmd == "status":
+        token    = get_token(user_id)
+        info     = get_user_info(user_id)
+        stats    = get_stats(user_id)
+        if token and info:
+            acct = f"✅ Connected as **{info['display_name']}** ({info['email']})"
+        else:
+            acct = "❌ Not connected — say *sign in* to connect"
+        msg = (
+            f"**{BOT_NAME} Status**\n\n"
+            f"Account: {acct}\n"
+            f"Conversation history: {stats['message_count']} messages"
+            + (f" (oldest {stats['history_age']} ago)" if stats["message_count"] else "")
+        )
+        await turn_context.send_activity(msg)
+        return True
+
+    if cmd in ("clear", "forget", "reset"):
+        clear_history(user_id)
+        await turn_context.send_activity(
+            "✅ Conversation history cleared. Starting fresh!"
+        )
+        return True
+
+    return False  # unknown command — fall through to AI
+
+
+# ── Bot logic ──────────────────────────────────────────────────────────────────
 async def on_turn(turn_context: TurnContext):
     if turn_context.activity.type == ActivityTypes.message:
         await handle_message(turn_context)
@@ -160,20 +333,35 @@ async def on_turn(turn_context: TurnContext):
 async def handle_message(turn_context: TurnContext):
     user_id   = turn_context.activity.from_property.id
     user_name = turn_context.activity.from_property.name or "there"
-    user_text = (turn_context.activity.text or "").strip()
 
-    # Card action
+    # Card action (button press)
     action_data = turn_context.activity.value
     if action_data and isinstance(action_data, dict) and "gnb_action" in action_data:
         await handle_card_action(turn_context, action_data, user_id)
         return
+
+    user_text = (turn_context.activity.text or "").strip()
+
+    # Group chat: only respond when @mentioned
+    if _is_group_chat(turn_context):
+        if not _is_mentioned(turn_context):
+            return
+        user_text = _strip_mention(user_text, turn_context)
 
     if not user_text:
         return
 
     log.info(f"Message from {user_name}: {user_text[:80]}")
 
-    # Sign out
+    # ── Commands (/help, /status, /clear, etc.) ──────────────────────────────
+    cmd_match = COMMAND_PATTERN.match(user_text)
+    if cmd_match:
+        handled = await handle_command(turn_context, cmd_match.group(1), user_id)
+        if handled:
+            return
+        # Unknown command — let AI handle it naturally
+
+    # ── Built-in intents ─────────────────────────────────────────────────────
     if SIGNOUT_INTENTS.match(user_text):
         delete_token(user_id)
         await turn_context.send_activity(
@@ -181,12 +369,10 @@ async def handle_message(turn_context: TurnContext):
         )
         return
 
-    # Sign in
     if SIGNIN_INTENTS.match(user_text):
         await send_card(turn_context, build_signin_card(user_id))
         return
 
-    # Absences (requires shared mailbox config)
     if ABSENCE_INTENTS.match(user_text) and SHARED_MAILBOX:
         token = get_token(user_id)
         if not token:
@@ -200,16 +386,13 @@ async def handle_message(turn_context: TurnContext):
         await send_card(turn_context, build_absences_card(absences))
         return
 
-    # Build conversation history
-    if user_id not in conversations:
-        conversations[user_id] = []
-    conversations[user_id].append({"role": "user", "content": user_text})
-    if len(conversations[user_id]) > MAX_HISTORY:
-        conversations[user_id] = conversations[user_id][-MAX_HISTORY:]
+    # ── Load persistent conversation history ─────────────────────────────────
+    history = load_history(user_id)
+    history.append({"role": "user", "content": user_text})
 
     await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
-    # Enrich system prompt with M365 context if the user is signed in
+    # ── Enrich system prompt with M365 context ────────────────────────────────
     sys_prompt = SYSTEM_PROMPT
     token      = get_token(user_id)
     if token:
@@ -224,18 +407,27 @@ async def handle_message(turn_context: TurnContext):
             email_ctx = await loop.run_in_executor(None, _emails_context, token)
             ctx_parts.append(email_ctx)
 
-        if CALENDAR_INTENTS.search(user_text):
+        if CALENDAR_WEEK_INTENTS.search(user_text):
+            cal_ctx = await loop.run_in_executor(None, _calendar_week_context, token)
+            ctx_parts.append(cal_ctx)
+        elif CALENDAR_TODAY_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_context, token)
             ctx_parts.append(cal_ctx)
+
+        if TASKS_INTENTS.search(user_text):
+            tasks_ctx = await loop.run_in_executor(None, _tasks_context, token)
+            ctx_parts.append(tasks_ctx)
 
         if ctx_parts:
             sys_prompt = SYSTEM_PROMPT + "\n\n" + "\n\n".join(ctx_parts)
 
+    # ── Call AI ───────────────────────────────────────────────────────────────
     try:
         loop  = asyncio.get_event_loop()
-        reply = await loop.run_in_executor(None, call_ai, conversations[user_id], sys_prompt)
+        reply = await loop.run_in_executor(None, call_ai, history, sys_prompt)
         if reply:
-            conversations[user_id].append({"role": "assistant", "content": reply})
+            history.append({"role": "assistant", "content": reply})
+            save_history(user_id, history)
         else:
             reply = "Sorry, I ran into an issue — please try again in a moment."
     except Exception as e:
@@ -264,11 +456,12 @@ async def handle_greeting(turn_context: TurnContext):
                 await turn_context.send_activity(
                     f"G'day! I'm **{BOT_NAME}**, your AI assistant for GNB Energy.\n\n"
                     "Ask me anything, or say **sign in** to connect your Microsoft account "
-                    "for email and calendar features."
+                    "for email and calendar features.\n\n"
+                    "Type `/help` to see everything I can do."
                 )
 
 
-# ── HTTP endpoints ─────────────────────────────────────────────────────────────
+# ── HTTP endpoints ──────────────────────────────────────────────────────────────
 async def messages(req: web.Request) -> web.Response:
     if "application/json" not in req.content_type:
         return web.Response(status=415)
