@@ -61,6 +61,33 @@ def get_calendar_today(token: str) -> list[dict]:
         return []
 
 
+def get_calendar_tomorrow(token: str) -> list[dict]:
+    """Fetch the user's calendar events for tomorrow (AEST)."""
+    try:
+        now   = datetime.now(AEST)
+        tmrw  = now + timedelta(days=1)
+        start = tmrw.strftime("%Y-%m-%dT00:00:00+10:00")
+        end   = tmrw.strftime("%Y-%m-%dT23:59:59+10:00")
+        r = requests.get(
+            f"{GRAPH}/me/calendarView",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Prefer":        'outlook.timezone="Australia/Brisbane"',
+            },
+            params={
+                "startDateTime": start,
+                "endDateTime":   end,
+                "$select":       "subject,start,end,location,organizer,isAllDay,isCancelled",
+                "$orderby":      "start/dateTime",
+            },
+            timeout=15,
+        )
+        return r.json().get("value", []) if r.ok else []
+    except Exception as e:
+        log.error(f"Graph calendar tomorrow error: {e}")
+        return []
+
+
 def get_calendar_week(token: str, days: int = 7) -> list[dict]:
     """Fetch the user's calendar events for the next N days (AEST)."""
     try:

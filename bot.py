@@ -37,6 +37,7 @@ from config import (
 from conversations import clear_history, get_stats, load_history, save_history
 from graph import (
     get_calendar_today,
+    get_calendar_tomorrow,
     get_calendar_week,
     get_recent_emails,
     get_shared_mailbox_emails,
@@ -68,7 +69,13 @@ EMAIL_INTENTS = re.compile(
     re.IGNORECASE,
 )
 CALENDAR_TODAY_INTENTS = re.compile(
-    r"(calendar|schedule|meeting|agenda|today|tomorrow|what.s\s+on|what\s+do\s+i\s+have|my\s+day)",
+    r"(calendar|schedule|meeting|agenda|today|what.s\s+on\s+today|what\s+do\s+i\s+have\s+today|my\s+day)",
+    re.IGNORECASE,
+)
+CALENDAR_TOMORROW_INTENTS = re.compile(
+    r"(tomorrow.?s?\s+(meetings?|events?|schedule|calendar|agenda)"
+    r"|what.s\s+on\s+tomorrow|what\s+do\s+i\s+have\s+tomorrow"
+    r"|my\s+agenda\s+tomorrow|tomorrow.s\s+agenda|tomorrow)",
     re.IGNORECASE,
 )
 CALENDAR_WEEK_INTENTS = re.compile(
@@ -166,6 +173,30 @@ def _calendar_context(token: str) -> str:
         entry   = f"- {start}–{end} | {subject}"
         if loc:
             entry += f" @ {loc}"
+        lines.append(entry)
+    return "\n".join(lines)
+
+
+def _calendar_tomorrow_context(token: str) -> str:
+    from datetime import datetime, timedelta
+    import zoneinfo
+    AEST     = zoneinfo.ZoneInfo("Australia/Brisbane")
+    tmrw_str = (datetime.now(AEST) + timedelta(days=1)).strftime("%-d %B %Y")
+    events   = get_calendar_tomorrow(token)
+    if not events:
+        return f"The user has no calendar events tomorrow ({tmrw_str})."
+    lines = [f"Tomorrow's calendar ({tmrw_str}):"]
+    for ev in events:
+        subject   = ev.get("subject", "(no title)")
+        start     = ev.get("start", {}).get("dateTime", "")[:16].replace("T", " ")
+        end       = ev.get("end",   {}).get("dateTime", "")[:16].replace("T", " ")[11:]
+        loc       = ev.get("location", {}).get("displayName", "")
+        cancelled = ev.get("isCancelled", False)
+        entry     = f"- {start}–{end} | {subject}"
+        if loc:
+            entry += f" @ {loc}"
+        if cancelled:
+            entry += " [CANCELLED]"
         lines.append(entry)
     return "\n".join(lines)
 
@@ -428,6 +459,9 @@ async def handle_message(turn_context: TurnContext):
 
         if CALENDAR_WEEK_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_week_context, token)
+            ctx_parts.append("=== REAL DATA FROM USER'S CALENDAR (use this, do not guess) ===\n" + cal_ctx)
+        elif CALENDAR_TOMORROW_INTENTS.search(user_text):
+            cal_ctx = await loop.run_in_executor(None, _calendar_tomorrow_context, token)
             ctx_parts.append("=== REAL DATA FROM USER'S CALENDAR (use this, do not guess) ===\n" + cal_ctx)
         elif CALENDAR_TODAY_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_context, token)
