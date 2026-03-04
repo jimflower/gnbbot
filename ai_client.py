@@ -1,26 +1,19 @@
 """
-AI client — calls Anthropic API directly via the Python SDK.
+AI client — calls Claude via the Claude Code CLI subprocess.
+Requires Claude Code CLI installed and authenticated on the server.
 """
 
 import logging
-import anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, SYSTEM_PROMPT
+import os
+import subprocess
+from config import NVM_BIN, SYSTEM_PROMPT
 
 log = logging.getLogger(__name__)
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _client
 
 
 def call_ai(messages: list[dict], system_prompt: str = "") -> str | None:
     """
-    Call Claude with a conversation history.
+    Call Claude CLI with a conversation history.
 
     Args:
         messages: List of {"role": "user"|"assistant", "content": str}
@@ -29,14 +22,30 @@ def call_ai(messages: list[dict], system_prompt: str = "") -> str | None:
     Returns:
         Response text, or None on failure.
     """
+    sys_prompt = system_prompt or SYSTEM_PROMPT
+
+    # Flatten history into a single prompt
+    history = ""
+    for msg in messages[:-1]:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        history += f"{role}: {msg['content']}\n"
+    last = messages[-1]["content"]
+    prompt = f"{sys_prompt}\n\n{history}User: {last}\n\nRespond:" if history else f"{sys_prompt}\n\n{last}"
+
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env["HOME"] = os.path.expanduser("~")
+    env["PATH"] = f"{NVM_BIN}:{env.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
+
     try:
-        response = _get_client().messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1024,
-            system=system_prompt or SYSTEM_PROMPT,
-            messages=messages,
+        result = subprocess.run(
+            ["claude", "-p", prompt],
+            capture_output=True, text=True, timeout=180, env=env,
         )
-        return response.content[0].text
+        if result.returncode != 0 or not result.stdout.strip():
+            log.error(f"Claude CLI error (rc={result.returncode}): {result.stderr.strip()[:200]}")
+            return None
+        return result.stdout.strip()
     except Exception as e:
-        log.error(f"Anthropic API error: {e}")
+        log.error(f"Claude CLI exception: {e}")
         return None

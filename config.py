@@ -18,9 +18,9 @@ BOT_NAME = os.getenv("BOT_NAME", "GNB Assist")
 BOT_PORT = int(os.getenv("BOT_PORT", "3978"))
 BASE_URL = os.getenv("BASE_URL", "http://localhost:3978")
 
-# ── AI ────────────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+# ── Claude CLI ────────────────────────────────────────────────────────────────
+# Path to the NVM bin directory containing the claude CLI
+NVM_BIN = os.getenv("NVM_BIN", "/root/.nvm/versions/node/v24/bin")
 
 # ── Data directory (token DB, etc.) ──────────────────────────────────────────
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))

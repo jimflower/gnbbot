@@ -39,7 +39,6 @@ ask() {
 
 step() { echo -e "\n${BOLD}$1${NC}"; }
 ok()   { echo -e "${GREEN}✓ $1${NC}"; }
-info() { echo -e "  $1"; }
 
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -53,7 +52,7 @@ echo -e "${BOLD}  GNB Assist – VPS Setup${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo "This will install GNB Assist and configure it to start automatically."
-echo "You'll need your Azure App Registration credentials and Anthropic API key."
+echo "You'll need your Azure App Registration credentials and a Claude Code subscription."
 echo ""
 
 # ── Collect configuration ─────────────────────────────────────────────────────
@@ -66,10 +65,6 @@ step "Bot settings"
 BOT_NAME=$(ask "Bot display name" "GNB Assist")
 BASE_URL=$(ask "Public HTTPS URL (e.g. https://assist.yourdomain.com)")
 
-step "Anthropic API"
-ANTHROPIC_API_KEY=$(ask "API key" "" secret)
-CLAUDE_MODEL=$(ask "Claude model" "claude-sonnet-4-6")
-
 step "Microsoft 365 (optional)"
 echo "  The shared mailbox is used for the 'absences' command."
 echo "  Leave blank to skip this feature."
@@ -79,27 +74,6 @@ step "System prompt (optional)"
 DEFAULT_PROMPT="You are GNB Assist, an AI assistant for GNB Energy. Be professional but approachable. Keep responses concise and practical. You are running inside Microsoft Teams."
 echo "  Press Enter to use the default, or type a custom prompt."
 SYSTEM_PROMPT=$(ask "System prompt" "$DEFAULT_PROMPT")
-
-# ── Write .env ────────────────────────────────────────────────────────────────
-step "Writing configuration"
-mkdir -p "$INSTALL_DIR/data"
-
-cat > "$INSTALL_DIR/.env" <<EOF
-AZURE_TENANT_ID=${AZURE_TENANT_ID}
-AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
-AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
-BOT_NAME=${BOT_NAME}
-BOT_PORT=3978
-BASE_URL=${BASE_URL}
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-CLAUDE_MODEL=${CLAUDE_MODEL}
-SHARED_MAILBOX=${SHARED_MAILBOX}
-DATA_DIR=${INSTALL_DIR}/data
-SYSTEM_PROMPT=${SYSTEM_PROMPT}
-EOF
-
-chmod 600 "$INSTALL_DIR/.env"
-ok ".env written (permissions: 600)"
 
 # ── System packages ───────────────────────────────────────────────────────────
 step "Installing system packages"
@@ -117,6 +91,61 @@ if ! command -v caddy &>/dev/null; then
     apt-get install -y -qq caddy
 fi
 ok "System packages ready"
+
+# ── NVM + Node.js + Claude CLI ───────────────────────────────────────────────
+step "Installing Node.js and Claude Code CLI"
+export NVM_DIR="/root/.nvm"
+
+if [[ ! -d "$NVM_DIR" ]]; then
+    curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+fi
+
+# Load NVM
+source "$NVM_DIR/nvm.sh"
+nvm install --lts
+nvm use --lts
+
+NODE_VERSION=$(node --version)
+NVM_BIN="$NVM_DIR/versions/node/$(nvm current)/bin"
+
+if ! command -v claude &>/dev/null; then
+    npm install -g @anthropic-ai/claude-code
+fi
+
+ok "Node.js $NODE_VERSION + Claude CLI installed"
+echo ""
+echo -e "  ${YELLOW}You must log in to Claude Code now.${NC}"
+echo -e "  Run: ${BOLD}$NVM_BIN/claude login${NC}"
+echo -e "  Then re-run this script, or continue manually from the README."
+echo ""
+read -rp "$(echo -e "${YELLOW}?${NC} Press Enter once you have logged in to Claude Code: ")"
+
+# Verify login
+if ! "$NVM_BIN/claude" -p "say hi" &>/dev/null; then
+    echo -e "${RED}Claude CLI login check failed — make sure you ran 'claude login' first.${NC}"
+    exit 1
+fi
+ok "Claude CLI authenticated"
+
+# ── Write .env ────────────────────────────────────────────────────────────────
+step "Writing configuration"
+mkdir -p "$INSTALL_DIR/data"
+
+cat > "$INSTALL_DIR/.env" <<EOF
+AZURE_TENANT_ID=${AZURE_TENANT_ID}
+AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+BOT_NAME=${BOT_NAME}
+BOT_PORT=3978
+BASE_URL=${BASE_URL}
+NVM_BIN=${NVM_BIN}
+SHARED_MAILBOX=${SHARED_MAILBOX}
+DATA_DIR=${INSTALL_DIR}/data
+SYSTEM_PROMPT=${SYSTEM_PROMPT}
+EOF
+
+chmod 600 "$INSTALL_DIR/.env"
+ok ".env written (permissions: 600)"
 
 # ── Python environment ────────────────────────────────────────────────────────
 step "Setting up Python environment"
@@ -141,40 +170,9 @@ systemctl enable caddy
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 ok "Caddy configured for ${DOMAIN}"
 
-# ── Generate Teams app icons ──────────────────────────────────────────────────
+# ── Generate Teams app icons + package ───────────────────────────────────────
 step "Generating Teams app package"
-python3 << 'PYEOF'
-import struct, zlib, os
-
-def make_png(width, height, r, g, b):
-    def chunk(name, data):
-        c = struct.pack('>I', len(data)) + name + data
-        return c + struct.pack('>I', zlib.crc32(name + data) & 0xffffffff)
-    raw = b''
-    for _ in range(height):
-        raw += b'\x00' + bytes([r, g, b] * width)
-    return (
-        b'\x89PNG\r\n\x1a\n'
-        + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
-        + chunk(b'IDAT', zlib.compress(raw))
-        + chunk(b'IEND', b'')
-    )
-
-os.makedirs('teams-app', exist_ok=True)
-with open('teams-app/color.png',   'wb') as f: f.write(make_png(192, 192, 0, 66, 130))
-with open('teams-app/outline.png', 'wb') as f: f.write(make_png(32,  32,  255, 255, 255))
-PYEOF
-
-# Fill manifest template
-sed -e "s|{{CLIENT_ID}}|${AZURE_CLIENT_ID}|g" \
-    -e "s|{{BOT_NAME}}|${BOT_NAME}|g" \
-    -e "s|{{BASE_URL}}|${BASE_URL}|g" \
-    -e "s|{{DOMAIN}}|${DOMAIN}|g" \
-    "$INSTALL_DIR/teams-app/manifest.template.json" \
-    > "$INSTALL_DIR/teams-app/manifest.json"
-
-# Create zip
-(cd "$INSTALL_DIR/teams-app" && zip -qj "$INSTALL_DIR/gnbbot-teams.zip" manifest.json color.png outline.png)
+(cd "$INSTALL_DIR" && python3 gen_icons.py)
 ok "Teams app package: gnbbot-teams.zip"
 
 # ── systemd service ───────────────────────────────────────────────────────────
