@@ -39,7 +39,7 @@ def call_ai(messages: list[dict], system_prompt: str = "") -> str | None:
 
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            ["claude", "-p", prompt, "--allowedTools", "WebSearch,WebFetch"],
             capture_output=True, text=True, timeout=180, env=env,
         )
         if result.returncode != 0 or not result.stdout.strip():
