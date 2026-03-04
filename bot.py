@@ -35,8 +35,12 @@ log = logging.getLogger(__name__)
 
 OAUTH_REDIRECT = f"{BASE_URL}/auth/callback"
 
-settings = BotFrameworkAdapterSettings(app_id=AZURE_CLIENT_ID, app_password=AZURE_CLIENT_SECRET)
-adapter  = BotFrameworkAdapter(settings)
+settings = BotFrameworkAdapterSettings(
+    app_id=AZURE_CLIENT_ID,
+    app_password=AZURE_CLIENT_SECRET,
+    channel_auth_tenant=AZURE_TENANT_ID,
+)
+adapter = BotFrameworkAdapter(settings)
 
 # Per-user conversation history (in-memory, resets on restart)
 conversations: dict[str, list] = {}
