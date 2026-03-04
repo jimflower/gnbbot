@@ -423,6 +423,15 @@ async def handle_command(turn_context: TurnContext, command: str, user_id: str) 
         await turn_context.send_activity("Conversation history cleared. Starting fresh!")
         return True
 
+    if cmd in ("signin", "sign_in", "login", "connect"):
+        await send_card(turn_context, build_signin_card(user_id))
+        return True
+
+    if cmd in ("signout", "sign_out", "logout", "disconnect"):
+        delete_token(user_id)
+        await turn_context.send_activity("You've been signed out. Your Microsoft account has been disconnected.")
+        return True
+
     return False  # unknown command — fall through to AI
 
 
@@ -498,6 +507,25 @@ async def handle_message(turn_context: TurnContext):
     # ── Enrich system prompt with M365 context ─────────────────────────────────
     sys_prompt = SYSTEM_PROMPT
     token      = get_token(user_id)
+
+    # If user is asking for M365 data but isn't signed in, send the sign-in card
+    _m365_needed = (
+        EMAIL_INTENTS.search(user_text)
+        or CALENDAR_TODAY_INTENTS.search(user_text)
+        or CALENDAR_TOMORROW_INTENTS.search(user_text)
+        or CALENDAR_WEEK_INTENTS.search(user_text)
+        or TASKS_INTENTS.search(user_text)
+        or ONEDRIVE_INTENTS.search(user_text)
+        or (SHARED_MAILBOX_INTENTS.search(user_text) and SHARED_MAILBOX)
+    )
+    if _m365_needed and not token:
+        await send_card(turn_context, build_signin_card(user_id))
+        await turn_context.send_activity(
+            "You'll need to sign in first to access your Microsoft 365 data. "
+            "Click the button above, or type **sign in**."
+        )
+        return
+
     if token:
         loop      = asyncio.get_event_loop()
         ctx_parts = []

@@ -11,8 +11,12 @@ from config import DATA_DIR, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_
 
 DB_PATH = os.path.join(DATA_DIR, "user_tokens.db")
 
-# Delegated scopes — covers email, calendar, tasks, profile, OneDrive files
+# Delegated scopes for new sign-ins (full set, shown on consent screen)
 OAUTH_SCOPES = "Mail.Read Calendars.Read Tasks.ReadWrite Files.Read User.Read offline_access"
+
+# Conservative scopes for token refresh — must match what users originally consented to.
+# Adding new scopes here causes refresh to fail for existing users; they must sign in fresh.
+_REFRESH_SCOPES = "Mail.Read Calendars.Read Tasks.ReadWrite User.Read offline_access"
 
 
 def _get_conn():
@@ -73,6 +77,8 @@ def get_token(teams_user_id) -> str | None:
 
 
 def _refresh(teams_user_id, row) -> str | None:
+    import logging
+    log = logging.getLogger(__name__)
     try:
         r = requests.post(
             f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/oauth2/v2.0/token",
@@ -81,12 +87,17 @@ def _refresh(teams_user_id, row) -> str | None:
                 "client_id":     AZURE_CLIENT_ID,
                 "client_secret": AZURE_CLIENT_SECRET,
                 "refresh_token": row["refresh_token"],
-                "scope":         OAUTH_SCOPES,
+                "scope":         _REFRESH_SCOPES,
             },
             timeout=15,
         )
         data = r.json()
         if "access_token" not in data:
+            # Refresh token is invalid or expired — delete the stale entry so
+            # the bot knows to prompt the user to sign in again.
+            err = data.get("error", "unknown")
+            log.warning(f"Token refresh failed for {teams_user_id} ({err}) — clearing stored token")
+            delete_token(teams_user_id)
             return None
 
         store_token(
@@ -99,7 +110,8 @@ def _refresh(teams_user_id, row) -> str | None:
             data.get("expires_in", 3600),
         )
         return data["access_token"]
-    except Exception:
+    except Exception as e:
+        log.error(f"Token refresh exception for {teams_user_id}: {e}")
         return None
 
 
