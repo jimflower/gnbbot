@@ -11,8 +11,8 @@ from config import DATA_DIR, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_
 
 DB_PATH = os.path.join(DATA_DIR, "user_tokens.db")
 
-# Delegated scopes — covers email, calendar, tasks, profile
-OAUTH_SCOPES = "Mail.Read Calendars.Read Tasks.ReadWrite User.Read offline_access"
+# Delegated scopes — covers email, calendar, tasks, profile, OneDrive files
+OAUTH_SCOPES = "Mail.Read Calendars.Read Tasks.ReadWrite Files.Read User.Read offline_access"
 
 
 def _get_conn():

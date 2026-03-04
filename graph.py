@@ -150,6 +150,75 @@ def get_tasks(token: str) -> list[dict]:
         return []
 
 
+def get_onedrive_recent(token: str, count: int = 15) -> list[dict]:
+    """Fetch recently accessed OneDrive files."""
+    try:
+        r = requests.get(
+            f"{GRAPH}/me/drive/recent",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "$select": "id,name,size,lastModifiedDateTime,file,folder,webUrl",
+                "$top":    count,
+            },
+            timeout=15,
+        )
+        return r.json().get("value", []) if r.ok else []
+    except Exception as e:
+        log.error(f"Graph OneDrive recent error: {e}")
+        return []
+
+
+def search_onedrive(token: str, query: str, count: int = 10) -> list[dict]:
+    """Search OneDrive for files/folders matching query."""
+    import urllib.parse
+    try:
+        r = requests.get(
+            f"{GRAPH}/me/drive/root/search(q='{urllib.parse.quote(query)}')",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "$select": "id,name,size,lastModifiedDateTime,file,folder,webUrl",
+                "$top":    count,
+            },
+            timeout=15,
+        )
+        return r.json().get("value", []) if r.ok else []
+    except Exception as e:
+        log.error(f"Graph OneDrive search error: {e}")
+        return []
+
+
+# File types we can request as plain text via the Graph API
+_TEXT_TYPES   = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".html", ".htm"}
+_OFFICE_TYPES = {".docx", ".doc", ".pptx", ".ppt"}
+
+
+def get_file_text(token: str, item_id: str, filename: str, max_chars: int = 3000) -> str | None:
+    """
+    Download and return text content of a OneDrive file.
+    Supports plain text files and Office documents (converted to text by Graph).
+    Returns None for unsupported types or on error.
+    """
+    import os as _os
+    ext = _os.path.splitext(filename)[1].lower()
+    if ext not in _TEXT_TYPES and ext not in _OFFICE_TYPES:
+        return None
+    try:
+        params = {"format": "text"} if ext in _OFFICE_TYPES else {}
+        r = requests.get(
+            f"{GRAPH}/me/drive/items/{item_id}/content",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=30,
+            allow_redirects=True,
+        )
+        if r.ok and r.text.strip():
+            return r.text.strip()[:max_chars]
+        return None
+    except Exception as e:
+        log.error(f"Graph file content error ({filename}): {e}")
+        return None
+
+
 def get_shared_mailbox_emails(token: str, mailbox: str, count: int = 25) -> list[dict]:
     """Fetch emails from a shared mailbox (user must have access)."""
     try:

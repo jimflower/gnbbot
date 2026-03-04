@@ -39,9 +39,12 @@ from graph import (
     get_calendar_today,
     get_calendar_tomorrow,
     get_calendar_week,
+    get_file_text,
+    get_onedrive_recent,
     get_recent_emails,
     get_shared_mailbox_emails,
     get_tasks,
+    search_onedrive,
 )
 from user_tokens import OAUTH_SCOPES, delete_token, get_token, get_user_info, store_token
 
@@ -97,6 +100,13 @@ TASKS_INTENTS = re.compile(
     r"(my\s+tasks?|my\s+to\s*-?\s*do|todo\s+list|outstanding\s+tasks?"
     r"|what\s+(do\s+i\s+need\s+to\s+do|tasks?\s+do\s+i\s+have)"
     r"|pending\s+tasks?|open\s+tasks?)",
+    re.IGNORECASE,
+)
+ONEDRIVE_INTENTS = re.compile(
+    r"(onedrive|one\s*drive|my\s+files?|my\s+documents?"
+    r"|find\s+(file|document|folder)|search\s+(onedrive|my\s+files?|documents?)"
+    r"|read\s+(the\s+)?(file|document)|what.?s\s+in\s+(the\s+)?(file|document)"
+    r"|open\s+(the\s+)?(file|document)|recent\s+files?)",
     re.IGNORECASE,
 )
 COMMAND_PATTERN = re.compile(r"^[/!](\w+)", re.IGNORECASE)
@@ -274,6 +284,54 @@ def _tasks_context(token: str) -> str:
     return "\n".join(lines)
 
 
+def _onedrive_context(token: str, query: str) -> str:
+    """
+    Search OneDrive for files matching query, fall back to recent files.
+    For readable file types (txt, docx, etc.) fetch and include content.
+    """
+    import os as _os
+
+    # Try a targeted search first; fall back to recent files
+    files  = search_onedrive(token, query) if query.strip() else []
+    recent = not files
+    if not files:
+        files = get_onedrive_recent(token)
+    if not files:
+        return "No files found on OneDrive, or OneDrive access is not available."
+
+    header = "Recent OneDrive files:" if recent else f"OneDrive search results for '{query}':"
+    lines  = [header]
+
+    content_fetched = False
+    for f in files[:10]:
+        name      = f.get("name", "(unknown)")
+        size      = f.get("size", 0)
+        modified  = f.get("lastModifiedDateTime", "")[:16].replace("T", " ")
+        item_id   = f.get("id", "")
+        url       = f.get("webUrl", "")
+        is_folder = "folder" in f
+        ext       = _os.path.splitext(name)[1].lower()
+
+        size_str = f"{size // 1024} KB" if size > 1024 else f"{size} B"
+        kind     = "Folder" if is_folder else "File"
+        entry    = f"- [{kind}] {name} ({size_str}, modified {modified})"
+        if url:
+            entry += f" — {url}"
+        lines.append(entry)
+
+        # Fetch text content for the first readable, reasonably sized file
+        readable_exts = {".txt", ".md", ".csv", ".log", ".json", ".xml",
+                         ".html", ".htm", ".docx", ".doc", ".pptx", ".ppt"}
+        if (not content_fetched and not is_folder
+                and ext in readable_exts and item_id and size < 500_000):
+            content = get_file_text(token, item_id, name)
+            if content:
+                lines.append(f"  Content of {name}:\n---\n{content}\n---")
+                content_fetched = True
+
+    return "\n".join(lines)
+
+
 def _check_absences(token: str) -> list[dict]:
     """Parse today's absence emails from the shared mailbox."""
     from datetime import datetime
@@ -325,6 +383,7 @@ async def handle_command(turn_context: TurnContext, command: str, user_id: str) 
             "- *\"my calendar\"* or *\"my schedule\"* — today's meetings\n"
             "- *\"this week\"* or *\"upcoming meetings\"* — next 7 days\n"
             "- *\"my tasks\"* — outstanding To Do items\n"
+            "- *\"my files\"* or *\"search OneDrive for X\"* — OneDrive files and content\n"
         )
         if SHARED_MAILBOX:
             help_text += "- *\"absences\"* or *\"who's out\"* — today's absence report\n"
@@ -470,6 +529,10 @@ async def handle_message(turn_context: TurnContext):
         if TASKS_INTENTS.search(user_text):
             tasks_ctx = await loop.run_in_executor(None, _tasks_context, token)
             ctx_parts.append("=== REAL DATA FROM USER'S TASKS (use this, do not guess) ===\n" + tasks_ctx)
+
+        if ONEDRIVE_INTENTS.search(user_text):
+            od_ctx = await loop.run_in_executor(None, _onedrive_context, token, user_text)
+            ctx_parts.append("=== REAL DATA FROM USER'S ONEDRIVE (use this, do not guess) ===\n" + od_ctx)
 
         if ctx_parts:
             sys_prompt = SYSTEM_PROMPT + "\n\n" + "\n\n".join(ctx_parts)
