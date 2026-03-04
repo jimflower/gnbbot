@@ -54,13 +54,15 @@ SIGNOUT_INTENTS = re.compile(
     r"^\s*(sign\s*out|disconnect|logout|unlink\s+account)\s*$", re.IGNORECASE
 )
 EMAIL_INTENTS = re.compile(
-    r"(my\s+email|my\s+inbox|unread|latest\s+email|recent\s+email|new\s+email"
-    r"|check\s+(my\s+)?email|read\s+(my\s+)?email|email\s+from|emails?\s+today)",
+    r"(email|inbox|unread|message|mail|planning@|@gnbenergy)",
     re.IGNORECASE,
 )
 CALENDAR_INTENTS = re.compile(
-    r"(my\s+calendar|my\s+schedule|my\s+meetings?|what.s\s+on"
-    r"|today.s\s+(meetings?|events?|schedule)|my\s+(day|agenda)|what\s+do\s+i\s+have)",
+    r"(calendar|schedule|meeting|agenda|today|tomorrow|what.s\s+on|what\s+do\s+i\s+have|my\s+day)",
+    re.IGNORECASE,
+)
+SHARED_MAILBOX_INTENTS = re.compile(
+    r"(planning|planning@|shared\s+mail)",
     re.IGNORECASE,
 )
 ABSENCE_INTENTS = re.compile(
@@ -113,6 +115,20 @@ def _calendar_context(token: str) -> str:
         if loc:
             entry += f" @ {loc}"
         lines.append(entry)
+    return "\n".join(lines)
+
+
+def _shared_mailbox_context(token: str, mailbox: str) -> str:
+    emails = get_shared_mailbox_emails(token, mailbox)
+    if not emails:
+        return f"No emails found in {mailbox} or access not available."
+    lines = [f"Recent emails in {mailbox} (newest first):"]
+    for e in emails:
+        sender   = e.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
+        subject  = e.get("subject", "(no subject)")
+        preview  = e.get("bodyPreview", "")[:150]
+        received = e.get("receivedDateTime", "")[:16].replace("T", " ")
+        lines.append(f"- {received} | From: {sender} | {subject}: {preview}")
     return "\n".join(lines)
 
 
@@ -222,11 +238,17 @@ async def handle_message(turn_context: TurnContext):
 
         if EMAIL_INTENTS.search(user_text):
             email_ctx = await loop.run_in_executor(None, _emails_context, token)
-            ctx_parts.append(email_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S INBOX (use this, do not guess) ===\n" + email_ctx)
+
+        if SHARED_MAILBOX_INTENTS.search(user_text) and SHARED_MAILBOX:
+            shared_ctx = await loop.run_in_executor(
+                None, lambda: _shared_mailbox_context(token, SHARED_MAILBOX)
+            )
+            ctx_parts.append("=== REAL DATA FROM SHARED MAILBOX: " + SHARED_MAILBOX + " ===\n" + shared_ctx)
 
         if CALENDAR_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_context, token)
-            ctx_parts.append(cal_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S CALENDAR (use this, do not guess) ===\n" + cal_ctx)
 
         if ctx_parts:
             sys_prompt = SYSTEM_PROMPT + "\n\n" + "\n\n".join(ctx_parts)
