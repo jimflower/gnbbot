@@ -64,19 +64,21 @@ SIGNOUT_INTENTS = re.compile(
     r"^\s*(sign\s*out|disconnect|logout|unlink\s+account)\s*$", re.IGNORECASE
 )
 EMAIL_INTENTS = re.compile(
-    r"(my\s+email|my\s+inbox|unread|latest\s+email|recent\s+email|new\s+email"
-    r"|check\s+(my\s+)?email|read\s+(my\s+)?email|email\s+from|emails?\s+today)",
+    r"(email|inbox|unread|message|mail|planning@|@gnbenergy)",
     re.IGNORECASE,
 )
 CALENDAR_TODAY_INTENTS = re.compile(
-    r"(my\s+calendar|my\s+schedule|my\s+meetings?|what.s\s+on"
-    r"|today.s\s+(meetings?|events?|schedule)|my\s+(day|agenda)|what\s+do\s+i\s+have)",
+    r"(calendar|schedule|meeting|agenda|today|tomorrow|what.s\s+on|what\s+do\s+i\s+have|my\s+day)",
     re.IGNORECASE,
 )
 CALENDAR_WEEK_INTENTS = re.compile(
     r"(this\s+week|next\s+week|upcoming\s+meetings?|upcoming\s+events?"
     r"|week.s?\s+(meetings?|schedule|calendar)|meetings?\s+(this|next)\s+week"
     r"|what.s\s+coming\s+up|rest\s+of\s+(the\s+)?week)",
+    re.IGNORECASE,
+)
+SHARED_MAILBOX_INTENTS = re.compile(
+    r"(planning|planning@|shared\s+mail)",
     re.IGNORECASE,
 )
 ABSENCE_INTENTS = re.compile(
@@ -192,7 +194,7 @@ def _calendar_week_context(token: str) -> str:
                 day_lbl = dt.strftime("%A %-d %b")
             except Exception:
                 day_lbl = date_str
-            lines.append(f"\n**{day_lbl}**")
+            lines.append(f"\n{day_lbl}:")
             prev_date = date_str
 
         if is_allday:
@@ -202,6 +204,20 @@ def _calendar_week_context(token: str) -> str:
         if loc:
             entry += f" @ {loc}"
         lines.append(entry)
+    return "\n".join(lines)
+
+
+def _shared_mailbox_context(token: str, mailbox: str) -> str:
+    emails = get_shared_mailbox_emails(token, mailbox)
+    if not emails:
+        return f"No emails found in {mailbox} or access not available."
+    lines = [f"Recent emails in {mailbox} (newest first):"]
+    for e in emails:
+        sender   = e.get("from", {}).get("emailAddress", {}).get("name", "Unknown")
+        subject  = e.get("subject", "(no subject)")
+        preview  = e.get("bodyPreview", "")[:150]
+        received = e.get("receivedDateTime", "")[:16].replace("T", " ")
+        lines.append(f"- {received} | From: {sender} | {subject}: {preview}")
     return "\n".join(lines)
 
 
@@ -215,14 +231,14 @@ def _tasks_context(token: str) -> str:
         lst = t.get("_list_name", "Tasks")
         by_list.setdefault(lst, []).append(t)
     for lst_name, lst_tasks in by_list.items():
-        lines.append(f"\n**{lst_name}:**")
+        lines.append(f"\n{lst_name}:")
         for t in lst_tasks:
-            title     = t.get("title", "(untitled)")
-            imp       = t.get("importance", "normal")
-            due_raw   = (t.get("dueDateTime") or {}).get("dateTime", "")
-            due       = due_raw[:10] if due_raw else ""
-            imp_flag  = " ⭐" if imp == "high" else ""
-            due_flag  = f" (due {due})" if due else ""
+            title    = t.get("title", "(untitled)")
+            imp      = t.get("importance", "normal")
+            due_raw  = (t.get("dueDateTime") or {}).get("dateTime", "")
+            due      = due_raw[:10] if due_raw else ""
+            imp_flag = " [HIGH]" if imp == "high" else ""
+            due_flag = f" (due {due})" if due else ""
             lines.append(f"- {title}{imp_flag}{due_flag}")
     return "\n".join(lines)
 
@@ -263,14 +279,14 @@ def _check_absences(token: str) -> list[dict]:
 # ── Command handlers ───────────────────────────────────────────────────────────
 async def handle_command(turn_context: TurnContext, command: str, user_id: str) -> bool:
     """
-    Handle slash/bang commands.  Returns True if the command was handled.
+    Handle slash/bang commands. Returns True if the command was handled.
     Inspired by OpenClaw's /status, /usage, /activation, /think commands.
     """
     cmd = command.lower()
 
     if cmd == "help":
-        token = get_token(user_id)
-        auth_status = "✅ Connected" if token else "❌ Not connected"
+        token       = get_token(user_id)
+        auth_status = "Connected" if token else "Not connected"
         help_text = (
             f"**{BOT_NAME} — Help**\n\n"
             "**Microsoft 365 features** (requires sign-in):\n"
@@ -296,13 +312,13 @@ async def handle_command(turn_context: TurnContext, command: str, user_id: str) 
         return True
 
     if cmd == "status":
-        token    = get_token(user_id)
-        info     = get_user_info(user_id)
-        stats    = get_stats(user_id)
+        token = get_token(user_id)
+        info  = get_user_info(user_id)
+        stats = get_stats(user_id)
         if token and info:
-            acct = f"✅ Connected as **{info['display_name']}** ({info['email']})"
+            acct = f"Connected as **{info['display_name']}** ({info['email']})"
         else:
-            acct = "❌ Not connected — say *sign in* to connect"
+            acct = "Not connected — say *sign in* to connect"
         msg = (
             f"**{BOT_NAME} Status**\n\n"
             f"Account: {acct}\n"
@@ -314,9 +330,7 @@ async def handle_command(turn_context: TurnContext, command: str, user_id: str) 
 
     if cmd in ("clear", "forget", "reset"):
         clear_history(user_id)
-        await turn_context.send_activity(
-            "✅ Conversation history cleared. Starting fresh!"
-        )
+        await turn_context.send_activity("Conversation history cleared. Starting fresh!")
         return True
 
     return False  # unknown command — fall through to AI
@@ -353,15 +367,14 @@ async def handle_message(turn_context: TurnContext):
 
     log.info(f"Message from {user_name}: {user_text[:80]}")
 
-    # ── Commands (/help, /status, /clear, etc.) ──────────────────────────────
+    # ── Commands (/help, /status, /clear, etc.) ───────────────────────────────
     cmd_match = COMMAND_PATTERN.match(user_text)
     if cmd_match:
         handled = await handle_command(turn_context, cmd_match.group(1), user_id)
         if handled:
             return
-        # Unknown command — let AI handle it naturally
 
-    # ── Built-in intents ─────────────────────────────────────────────────────
+    # ── Built-in intents ──────────────────────────────────────────────────────
     if SIGNOUT_INTENTS.match(user_text):
         delete_token(user_id)
         await turn_context.send_activity(
@@ -386,13 +399,13 @@ async def handle_message(turn_context: TurnContext):
         await send_card(turn_context, build_absences_card(absences))
         return
 
-    # ── Load persistent conversation history ─────────────────────────────────
+    # ── Load persistent conversation history ──────────────────────────────────
     history = load_history(user_id)
     history.append({"role": "user", "content": user_text})
 
     await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
-    # ── Enrich system prompt with M365 context ────────────────────────────────
+    # ── Enrich system prompt with M365 context ─────────────────────────────────
     sys_prompt = SYSTEM_PROMPT
     token      = get_token(user_id)
     if token:
@@ -405,23 +418,29 @@ async def handle_message(turn_context: TurnContext):
 
         if EMAIL_INTENTS.search(user_text):
             email_ctx = await loop.run_in_executor(None, _emails_context, token)
-            ctx_parts.append(email_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S INBOX (use this, do not guess) ===\n" + email_ctx)
+
+        if SHARED_MAILBOX_INTENTS.search(user_text) and SHARED_MAILBOX:
+            shared_ctx = await loop.run_in_executor(
+                None, lambda: _shared_mailbox_context(token, SHARED_MAILBOX)
+            )
+            ctx_parts.append("=== REAL DATA FROM SHARED MAILBOX: " + SHARED_MAILBOX + " ===\n" + shared_ctx)
 
         if CALENDAR_WEEK_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_week_context, token)
-            ctx_parts.append(cal_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S CALENDAR (use this, do not guess) ===\n" + cal_ctx)
         elif CALENDAR_TODAY_INTENTS.search(user_text):
             cal_ctx = await loop.run_in_executor(None, _calendar_context, token)
-            ctx_parts.append(cal_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S CALENDAR (use this, do not guess) ===\n" + cal_ctx)
 
         if TASKS_INTENTS.search(user_text):
             tasks_ctx = await loop.run_in_executor(None, _tasks_context, token)
-            ctx_parts.append(tasks_ctx)
+            ctx_parts.append("=== REAL DATA FROM USER'S TASKS (use this, do not guess) ===\n" + tasks_ctx)
 
         if ctx_parts:
             sys_prompt = SYSTEM_PROMPT + "\n\n" + "\n\n".join(ctx_parts)
 
-    # ── Call AI ───────────────────────────────────────────────────────────────
+    # ── Call AI ────────────────────────────────────────────────────────────────
     try:
         loop  = asyncio.get_event_loop()
         reply = await loop.run_in_executor(None, call_ai, history, sys_prompt)
@@ -540,7 +559,7 @@ async def auth_callback(req: web.Request) -> web.Response:
     return web.Response(
         content_type="text/html",
         text=(
-            "<h2 style='font-family:sans-serif;color:#107C10'>✓ Signed in successfully!</h2>"
+            "<h2 style='font-family:sans-serif;color:#107C10'>Signed in successfully!</h2>"
             f"<p style='font-family:sans-serif'>Connected as <strong>{display_name}</strong> ({email}).</p>"
             "<p style='font-family:sans-serif'>You can close this tab and return to Teams.</p>"
         ),
