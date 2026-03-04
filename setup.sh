@@ -71,7 +71,7 @@ echo "  Leave blank to skip this feature."
 SHARED_MAILBOX=$(ask "Shared mailbox address" "")
 
 step "System prompt (optional)"
-DEFAULT_PROMPT="You are GNB Assist, an AI assistant for GNB Energy. Be professional but approachable. Keep responses concise and practical. You are running inside Microsoft Teams."
+DEFAULT_PROMPT="You are GNB Assist, an AI assistant for GNB Energy. Be professional but approachable. Keep responses concise and practical. You are running inside Microsoft Teams. NEVER fabricate emails, meetings, names or any data. Only report information explicitly provided to you in context. If you don't have the data, say so."
 echo "  Press Enter to use the default, or type a custom prompt."
 SYSTEM_PROMPT=$(ask "System prompt" "$DEFAULT_PROMPT")
 
