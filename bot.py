@@ -160,7 +160,7 @@ def _calendar_context(token: str) -> str:
     from datetime import datetime
     import zoneinfo
     AEST      = zoneinfo.ZoneInfo("Australia/Brisbane")
-    today_str = datetime.now(AEST).strftime("%-d %B %Y")
+    today_str = datetime.now(AEST).strftime("%A %-d %B %Y")
     events    = get_calendar_today(token)
     if not events:
         return f"The user has no calendar events today ({today_str})."
@@ -181,7 +181,7 @@ def _calendar_tomorrow_context(token: str) -> str:
     from datetime import datetime, timedelta
     import zoneinfo
     AEST     = zoneinfo.ZoneInfo("Australia/Brisbane")
-    tmrw_str = (datetime.now(AEST) + timedelta(days=1)).strftime("%-d %B %Y")
+    tmrw_str = (datetime.now(AEST) + timedelta(days=1)).strftime("%A %-d %B %Y")
     events   = get_calendar_tomorrow(token)
     if not events:
         return f"The user has no calendar events tomorrow ({tmrw_str})."
