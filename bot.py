@@ -570,9 +570,10 @@ async def handle_greeting(turn_context: TurnContext):
         for member in turn_context.activity.members_added:
             if member.id != turn_context.activity.recipient.id:
                 await turn_context.send_activity(
-                    f"G'day! I'm **{BOT_NAME}**, your AI assistant for GNB Energy.\n\n"
+                    f"G'day! Have I got an opportunity for you! 🎉\n\n"
+                    f"I'm **{BOT_NAME}**, your AI assistant for GNB Energy.\n\n"
                     "Ask me anything, or say **sign in** to connect your Microsoft account "
-                    "for email and calendar features.\n\n"
+                    "for email, calendar, tasks, and OneDrive.\n\n"
                     "Type `/help` to see everything I can do."
                 )
 
